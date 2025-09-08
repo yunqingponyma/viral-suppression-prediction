@@ -1,0 +1,357 @@
+---
+title: "LSTM_30"
+author: "Ruilie Cai"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+i <- i + 1
+d_tr <- DHEC_tests_final_cohort %>% filter(RFA_ID %in% ID.split[[i]]$ids.tr)
+d_te <- DHEC_tests_final_cohort %>% filter(RFA_ID %in% ID.split[[i]]$ids.te)
+
+num_repeated_time <- max(d_tr$time_window_index,d_te$time_window_index)
+IDs <- unique(d_tr$RFA_ID)
+d_py_tr <- data.frame(
+  RFA_ID = rep(IDs,each = num_repeated_time),
+  time_window_index = rep(1:num_repeated_time,length(IDs))
+) %>% 
+  arrange(RFA_ID,time_window_index) %>% 
+  left_join(d_tr,by = c('RFA_ID','time_window_index')) %>% 
+  mutate(
+    VL_log = log(VL + 1),
+    CD4_baseline_log = log(CD4_baseline + 1),
+    VL_baseline_log = log(VL_baseline + 1)
+  )
+
+IDs <- unique(d_te$RFA_ID)
+d_py_te <- data.frame(
+  RFA_ID = rep(IDs,each = num_repeated_time),
+  time_window_index = rep(1:num_repeated_time,length(IDs))
+) %>% 
+  arrange(RFA_ID,time_window_index) %>% 
+  left_join(d_te,by = c('RFA_ID','time_window_index')) %>% 
+  mutate(
+    VL_log = log(VL + 1),
+    CD4_baseline_log = log(CD4_baseline + 1),
+    VL_baseline_log = log(VL_baseline + 1)
+  )
+
+
+# Results matrix
+row_names <- c('1','3','5')
+col_names <- c('Accuracy','AUC','Recall','Precision','F1 Score','Youden Index')
+z_names <- c('Complete',"Complete (rm county)")
+LSTM_Metric <- array(NA,dim = c(length(row_names),length(col_names),length(z_names)),dimnames = list(Lag = row_names,Metric = col_names,Model = z_names))
+rm(row_names,col_names,z_names)
+LSTM_comp_y_te_hat <- LSTM_comp_y_te <- list()
+LSTM_comp_rm_y_te_hat <- LSTM_comp_rm_y_te <- list()
+
+##### LAG 1 #####
+kernel_size <- 1
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+```
+
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 8
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_Metric["1","AUC","Complete"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["1","Accuracy","Complete"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Recall","Complete"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Precision","Complete"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","F1 Score","Complete"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Youden Index","Complete"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+```{r}
+##### LAG 3 #####
+kernel_size <- 3
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+```
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 10
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_Metric["3","AUC","Complete"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["3","Accuracy","Complete"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Recall","Complete"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Precision","Complete"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","F1 Score","Complete"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Youden Index","Complete"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+```{r}
+##### LAG 5 #####
+kernel_size <- 5
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+```
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 13
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_Metric["5","AUC","Complete"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["5","Accuracy","Complete"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Recall","Complete"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Precision","Complete"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","F1 Score","Complete"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Youden Index","Complete"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+
+
+```{r}
+variable_list <- c(
+  'VL_log','VS','VR','VB','VR_N','VR_size_200_500','VR_size_500_1000','VR_size_1000_10000','VR_size_10000','prop_time',
+  'age','sex_male','race_white','race_other','risk_MSM','risk_other','region_rural','region_other',
+  'CD4_baseline_log','VL_baseline_log','Months_to_ini_VS',
+  'linkage','retention',
+  'ami.cum','chf.cum','pvd.cum','cevd.cum','dementia.cum','copd.cum','rheumd.cum','pud.cum','mld.cum','diab.cum','diabwc.cum','hp.cum','rend.cum','canc.cum','msld.cum','metacanc.cum','aids.cum',
+  'Depression','Anxiety','Psychiatric_disorder','Alcohol_use','Tobacco_use','Illicit_drug_use'
+)
+```
+
+```{r}
+kernel_size <- 1
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+LSTM_comp_rm_y_te$Lag1 <- Y_te %>% as.vector()
+```
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+```
+```{python}
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 8
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_comp_rm_y_te_hat$Lag1 <- Y_te_hat %>% as.vector()
+LSTM_Metric["1","AUC","Complete (rm county)"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["1","Accuracy","Complete (rm county)"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Recall","Complete (rm county)"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Precision","Complete (rm county)"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","F1 Score","Complete (rm county)"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["1","Youden Index","Complete (rm county)"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+```{r}
+kernel_size <- 3
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+LSTM_comp_rm_y_te$Lag3 <- Y_te %>% as.vector()
+```
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+```
+```{python}
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 10
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_comp_rm_y_te_hat$Lag3 <- Y_te_hat %>% as.vector()
+LSTM_Metric["3","AUC","Complete (rm county)"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["3","Accuracy","Complete (rm county)"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Recall","Complete (rm county)"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Precision","Complete (rm county)"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","F1 Score","Complete (rm county)"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["3","Youden Index","Complete (rm county)"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+
+```{r}
+kernel_size <- 5
+res <- f.data.py(d_py_tr,kernel_size,rate = 0.8,complete = T)
+X_tr <- res$X_tr
+Y_tr <- res$Y_tr
+X_val <- res$X_val
+Y_val <- res$Y_val
+res <- f.data.py(d_py_te,kernel_size,rate = 1,complete = T)
+X_te <- res$X_tr
+Y_te <- res$Y_tr
+LSTM_comp_rm_y_te$Lag5 <- Y_te %>% as.vector()
+```
+```{python}
+# Handoff from R
+X_tr = r.X_tr
+Y_tr = r.Y_tr
+X_val = r.X_val
+Y_val = r.Y_val
+X_te = r.X_te
+Y_te = r.Y_te
+
+kernel_size = int(r.kernel_size)
+padding_value = r.padding_value
+num_classes = r.num_classes
+variable_list = r.variable_list
+```
+```{python}
+LSTM_neurons = 256
+batch_size = 1024
+epochs = 13
+select_list = variable_list
+
+model = bulid_lstm(kernel_size,select_list,LSTM_neurons)
+history = run_lstm(model,X_tr,Y_tr,X_val,Y_val,batch_size,epochs,verbose=False)
+Y_te_hat = eval_lstm(model,history,X_te,Y_te)
+```
+```{r}
+Y_te_hat <- py$Y_te_hat %>% as.vector()
+LSTM_comp_rm_y_te_hat$Lag5 <- Y_te_hat %>% as.vector()
+LSTM_Metric["5","AUC","Complete (rm county)"] <- AUC(as.vector(Y_te),Y_te_hat)
+Y_te_hat <- ifelse(Y_te_hat >= 0.5,1,0) %>% as.vector()
+LSTM_Metric["5","Accuracy","Complete (rm county)"] <- Accuracy(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Recall","Complete (rm county)"] <- Recall(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Precision","Complete (rm county)"] <- Precision(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","F1 Score","Complete (rm county)"] <- F1(as.vector(Y_te),Y_te_hat)
+LSTM_Metric["5","Youden Index","Complete (rm county)"] <- Youden(as.vector(Y_te),Y_te_hat)
+```
+
+```{r}
+variable_list <- c(
+  'VL_log','VS','VR','VB','VR_N','VR_size_200_500','VR_size_500_1000','VR_size_1000_10000','VR_size_10000','prop_time',
+  'age','sex_male','race_white','race_other','risk_MSM','risk_other','region_rural','region_other',
+  'CD4_baseline_log','VL_baseline_log','Months_to_ini_VS',
+  'linkage','retention',
+  'ami.cum','chf.cum','pvd.cum','cevd.cum','dementia.cum','copd.cum','rheumd.cum','pud.cum','mld.cum','diab.cum','diabwc.cum','hp.cum','rend.cum','canc.cum','msld.cum','metacanc.cum','aids.cum',
+  'Depression','Anxiety','Psychiatric_disorder','Alcohol_use','Tobacco_use','Illicit_drug_use',
+  "New_Diagnoses_Rate","PrEP_to_Need_Ratio","pcp_rate","RPL_THEME1","RPL_THEME2","RPL_THEME3","RPL_THEME4","RPL_THEMES"
+)
+```

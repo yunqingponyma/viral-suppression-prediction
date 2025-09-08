@@ -1,0 +1,357 @@
+---
+title: "Tree-based methods for R01 Project"
+output: html_document
+date: Apr 16, 2022
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE)
+options(scipen = 200)
+```
+
+```{r library,message=FALSE,warning=F}
+library(dplyr)
+library(magrittr)
+library(lme4)
+library(tidyverse)
+source(knitr::purl("Metric Functions.Rmd"))
+```
+
+## Data preparation
+
+```{r}
+load('DHEC_tests_final_cohort.rda')
+load("ID.split.rda")
+```
+
+```{r read data}
+read.data <- function (data = DHEC_tests_final_cohort, iter = 1) {
+  # Use the 1st split
+  DHEC_tests_final_tr <- DHEC_tests_final_cohort %>% filter(RFA_ID %in% ID.split[[iter]]$ids.tr)
+  DHEC_tests_final_te <- DHEC_tests_final_cohort %>% filter(RFA_ID %in% ID.split[[iter]]$ids.te)
+  
+  d_tr <- DHEC_tests_final_tr %>% 
+  select(RFA_ID,TIME_DXDATE_TESTDATE,time_window_index,
+         age,sex,race,risk,region,
+         CD4_baseline,VL_baseline,AIDS,Months_to_ini_VS,
+         VL_interpretation,VL,VS,VR,VB,VR_N,VR_size,prop_time,
+         linkage,retention,visits,
+         # ami,chf,pvd,cevd,dementia,copd,rheumd,pud,mld,diab,diabwc,hp,rend,canc,msld,metacanc,aids,
+         ami.cum,chf.cum,pvd.cum,cevd.cum,dementia.cum,copd.cum,rheumd.cum,pud.cum,mld.cum,diab.cum,diabwc.cum,hp.cum,rend.cum,canc.cum,msld.cum,metacanc.cum,aids.cum,
+         Depression,Anxiety,Psychiatric_disorder,Alcohol_use,Tobacco_use,Illicit_drug_use,
+         New_Diagnoses_Rate,PrEP_to_Need_Ratio,pcp_rate,RPL_THEME1,RPL_THEME2,RPL_THEME3,RPL_THEME4,RPL_THEMES) %>% 
+  na.omit()
+
+d_te <- DHEC_tests_final_te %>% 
+  select(RFA_ID,TIME_DXDATE_TESTDATE,time_window_index,
+         age,sex,race,risk,region,
+         CD4_baseline,VL_baseline,AIDS,Months_to_ini_VS,
+         VL_interpretation,VL,VS,VR,VB,VR_N,VR_size,prop_time,
+         linkage,retention,visits,
+         # ami,chf,pvd,cevd,dementia,copd,rheumd,pud,mld,diab,diabwc,hp,rend,canc,msld,metacanc,aids,
+         ami.cum,chf.cum,pvd.cum,cevd.cum,dementia.cum,copd.cum,rheumd.cum,pud.cum,mld.cum,diab.cum,diabwc.cum,hp.cum,rend.cum,canc.cum,msld.cum,metacanc.cum,aids.cum,
+         Depression,Anxiety,Psychiatric_disorder,Alcohol_use,Tobacco_use,Illicit_drug_use,
+         New_Diagnoses_Rate,PrEP_to_Need_Ratio,pcp_rate,RPL_THEME1,RPL_THEME2,RPL_THEME3,RPL_THEME4,RPL_THEMES) %>% 
+  na.omit()
+  return(list(d_tr, d_te))
+}
+```
+
+```{r f.data.lag}
+# function of generating lag variables
+f.data.lag <- function(data,time_length,var_wider){
+  VL <- data
+  data.analysis <- VL %>% 
+    group_by(RFA_ID) %>% 
+    select(RFA_ID,time_window_index) %>% 
+    summarise(td = max(time_window_index))
+  data.analysis <- data.frame(RFA_ID = rep(data.analysis$RFA_ID,data.analysis$td)) %>% 
+    group_by(RFA_ID) %>% mutate(time_window_index = 1:length(RFA_ID)) %>% 
+    left_join(VL,by = c('RFA_ID','time_window_index'))
+
+  for (name in var_wider) {
+    for (k in 1:(time_length-1)) {
+      name.k <- paste0(name,'_',k)
+      data.analysis <- data.analysis %>% group_by(RFA_ID) %>% 
+        mutate(!!name.k := lag(get(name),n = k))
+    }
+    # print(name)
+  }
+  # original data must not have missing value
+  data.analysis <- data.analysis %>% na.omit() %>% as.data.frame()
+  return(data.analysis)
+}
+```
+
+## Lag 1 data
+
+```{r}
+var_wider <- c('VL','VS','VR','VB','VR_N','VR_size','prop_time',
+               'linkage','retention','visits',
+               # 'ami','chf','pvd','cevd','dementia','copd','rheumd','pud','mld','diab','diabwc','hp','rend','canc','msld','metacanc','aids',
+               'ami.cum','chf.cum','pvd.cum','cevd.cum','dementia.cum','copd.cum','rheumd.cum','pud.cum','mld.cum','diab.cum','diabwc.cum','hp.cum','rend.cum','canc.cum','msld.cum','metacanc.cum','aids.cum',
+               'Depression','Anxiety',"Psychiatric_disorder","Alcohol_use","Tobacco_use","Illicit_drug_use")
+```
+
+```{r}
+# do not need to be selected
+unselect <- c('RFA_ID', 'time_window_index', 'TIME_DXDATE_TESTDATE', 'AIDS', 'VL_interpretation', 'VL',  'VR', 'VB',  'VR_N', 'VR_size',  'prop_time', 'linkage', 'retention', 'visits',
+              
+              'ami.cum','chf.cum','pvd.cum','cevd.cum','dementia.cum','copd.cum','rheumd.cum','pud.cum','mld.cum','diab.cum','diabwc.cum','hp.cum','rend.cum','canc.cum','msld.cum','metacanc.cum','aids.cum',
+              
+               'Depression', 'Anxiety', 'Psychiatric_disorder', 'Alcohol_use', 'Tobacco_use', 'Illicit_drug_use')
+```
+
+### Tree-based methods
+
+```{r, warning = FALSE}
+library(rpart)
+```
+
+#### Classification Tree
+
+```{r, fig.width=10, fig.height=8}
+res.matrix.list <- list()
+d_te.list <- list()
+Tree.best.list <- list()
+y.prob.list <- list()
+y.true.list <- list()
+
+for (iter in 1:30) {
+  read_data <- read.data(data = DHEC_tests_final_cohort, iter = iter)
+  d_tr <- read_data[[1]]
+  d_te <- read_data[[2]]
+  
+  d_te.list[[iter]] <- d_te
+  
+  d_lag_tr <- f.data.lag(d_tr, time_length = 2, var_wider = var_wider)
+  d_lag_te <- f.data.lag(d_te, time_length = 2, var_wider = var_wider)
+  
+  d_lag_tr <- d_lag_tr %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1))
+  d_lag_te <- d_lag_te %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1))
+  
+  train.tree <- d_lag_tr %>% mutate(VS = as.factor(VS))
+  test.tree <- d_lag_te %>% mutate(VS = as.factor(VS))
+  
+  fit <- rpart(VS ~ ., data = train.tree, method = 'class')
+  
+  Tree.best.list[[iter]] <- fit
+  
+  par(mfrow = c(1,1), mar = rep(2,4))
+  plot(fit, uniform = T, main = paste0('Classification Tree for iter = ', iter))
+  text(fit, use.n = T, all = T, cex = 0.8)
+  
+  cp_vals <- fit$cptable
+  
+  prune.accuracy <- c()
+  # use pruned model to predict
+  for (i in 1:nrow(cp_vals)) {
+      predict <- ifelse(predict(prune(fit, cp = cp_vals[i,1]), newdata = test.tree) > 0.5, 1, 0)
+      prune.accuracy <- c(prune.accuracy, table(test.tree$VS, predict[,2]) %>% prop.table() %>% diag() %>% sum())
+  }
+  plot(prune.accuracy, type = 'l', xlab = '# of remaining CPs', ylab = 'prediction accuracy',
+       main = paste0('Accuracy of pruned tree for iter = ', iter))
+  
+  # use full model to predict
+  y.prob <- predict(fit, newdata = test.tree)
+  y.hat <- predict(fit, newdata = test.tree, type = 'class')
+  y <- test.tree$VS
+  
+  y.prob.list[[iter]] <- y.prob
+  y.true.list[[iter]] <- y
+  
+  accuracy <- Accuracy(y,y.hat)
+  auc <- AUC(as.numeric(y),as.numeric(y.hat))
+  recall <- Recall(y,y.hat)
+  precision <- Precision(y,y.hat)
+  f1 <- F1(y,y.hat)
+  youden <- Youden(y,y.hat)
+  
+  col_names <- c('Accuracy','AUC','Recall','Precision','F1 Score','Youden Index')
+  res.matrix <- matrix(c(accuracy,auc,recall,precision,f1,youden), nrow = 1)
+  colnames(res.matrix) <- col_names
+  
+  res.matrix.list[[iter]] <- res.matrix
+}
+```
+
+```{r}
+save(res.matrix.list, d_te.list, Tree.best.list, y.prob.list, y.true.list,
+     file = 'Tree_30_Lag1.rda')
+```
+
+## Lag 3 data
+
+### Tree-based methods
+
+#### Classification Tree
+
+```{r, fig.width=10, fig.height=8}
+res.matrix.list <- list()
+d_te.list <- list()
+Tree.best.list <- list()
+y.prob.list <- list()
+y.true.list <- list()
+
+for (iter in 1:30) {
+  read_data <- read.data(data = DHEC_tests_final_cohort, iter = iter)
+  d_tr <- read_data[[1]]
+  d_te <- read_data[[2]]
+  
+  d_te.list[[iter]] <- d_te
+  
+  d_lag_tr <- f.data.lag(d_tr, time_length = 4, var_wider = var_wider)
+  d_lag_te <- f.data.lag(d_te, time_length = 4, var_wider = var_wider)
+  
+  d_lag_tr <- d_lag_tr %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1),
+           VR_size_2 = as.factor(VR_size_2),
+           VR_size_3 = as.factor(VR_size_3))
+  d_lag_te <- d_lag_te %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1),
+           VR_size_2 = as.factor(VR_size_2),
+           VR_size_3 = as.factor(VR_size_3))
+  
+  train.tree <- d_lag_tr %>% mutate(VS = as.factor(VS))
+  test.tree <- d_lag_te %>% mutate(VS = as.factor(VS))
+  
+  fit <- rpart(VS ~ ., data = train.tree, method = 'class')
+  
+  Tree.best.list[[iter]] <- fit
+  
+  par(mfrow = c(1,1), mar = rep(2,4))
+  plot(fit, uniform = T, main = paste0('Classification Tree for iter = ', iter))
+  text(fit, use.n = T, all = T, cex = 0.8)
+  
+  cp_vals <- fit$cptable
+  
+  prune.accuracy <- c()
+  # use pruned model to predict
+  for (i in 1:nrow(cp_vals)) {
+      predict <- ifelse(predict(prune(fit, cp = cp_vals[i,1]), newdata = test.tree) > 0.5, 1, 0)
+      prune.accuracy <- c(prune.accuracy, table(test.tree$VS, predict[,2]) %>% prop.table() %>% diag() %>% sum())
+  }
+  plot(prune.accuracy, type = 'l', xlab = '# of remaining CPs', ylab = 'prediction accuracy',
+       main = paste0('Accuracy of pruned tree for iter = ', iter))
+  
+  # use full model to predict
+  y.prob <- predict(fit, newdata = test.tree)
+  y.hat <- predict(fit, newdata = test.tree, type = 'class')
+  y <- test.tree$VS
+  
+  y.prob.list[[iter]] <- y.prob
+  y.true.list[[iter]] <- y
+  
+  accuracy <- Accuracy(y,y.hat)
+  auc <- AUC(as.numeric(y),as.numeric(y.hat))
+  recall <- Recall(y,y.hat)
+  precision <- Precision(y,y.hat)
+  f1 <- F1(y,y.hat)
+  youden <- Youden(y,y.hat)
+  
+  col_names <- c('Accuracy','AUC','Recall','Precision','F1 Score','Youden Index')
+  res.matrix <- matrix(c(accuracy,auc,recall,precision,f1,youden), nrow = 1)
+  colnames(res.matrix) <- col_names
+  
+  res.matrix.list[[iter]] <- res.matrix
+}
+```
+
+```{r}
+save(res.matrix.list, d_te.list, Tree.best.list, y.prob.list, y.true.list,
+     file = 'Tree_30_Lag3.rda')
+```
+
+## Lag 5 data
+
+### Tree-based methods
+
+#### Classification Tree
+
+```{r, fig.width=10, fig.height=8}
+res.matrix.list <- list()
+d_te.list <- list()
+Tree.best.list <- list()
+y.prob.list <- list()
+y.true.list <- list()
+
+for (iter in 1:30) {
+  read_data <- read.data(data = DHEC_tests_final_cohort, iter = iter)
+  d_tr <- read_data[[1]]
+  d_te <- read_data[[2]]
+  
+  d_te.list[[iter]] <- d_te
+  
+  d_lag_tr <- f.data.lag(d_tr, time_length = 6, var_wider = var_wider)
+  d_lag_te <- f.data.lag(d_te, time_length = 6, var_wider = var_wider)
+  
+  d_lag_tr <- d_lag_tr %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1),
+           VR_size_2 = as.factor(VR_size_2),
+           VR_size_3 = as.factor(VR_size_3),
+           VR_size_4 = as.factor(VR_size_4),
+           VR_size_5 = as.factor(VR_size_5))
+  d_lag_te <- d_lag_te %>% dplyr::select(-unselect) %>%
+    mutate(region = as.factor(region),
+           VR_size_1 = as.factor(VR_size_1),
+           VR_size_2 = as.factor(VR_size_2),
+           VR_size_3 = as.factor(VR_size_3),
+           VR_size_4 = as.factor(VR_size_4),
+           VR_size_5 = as.factor(VR_size_5))
+  
+  train.tree <- d_lag_tr %>% mutate(VS = as.factor(VS))
+  test.tree <- d_lag_te %>% mutate(VS = as.factor(VS))
+  
+  fit <- rpart(VS ~ ., data = train.tree, method = 'class')
+  
+  Tree.best.list[[iter]] <- fit
+  
+  par(mfrow = c(1,1), mar = rep(2,4))
+  plot(fit, uniform = T, main = paste0('Classification Tree for iter = ', iter))
+  text(fit, use.n = T, all = T, cex = 0.8)
+  
+  cp_vals <- fit$cptable
+  
+  prune.accuracy <- c()
+  # use pruned model to predict
+  for (i in 1:nrow(cp_vals)) {
+      predict <- ifelse(predict(prune(fit, cp = cp_vals[i,1]), newdata = test.tree) > 0.5, 1, 0)
+      prune.accuracy <- c(prune.accuracy, table(test.tree$VS, predict[,2]) %>% prop.table() %>% diag() %>% sum())
+  }
+  plot(prune.accuracy, type = 'l', xlab = '# of remaining CPs', ylab = 'prediction accuracy',
+       main = paste0('Accuracy of pruned tree for iter = ', iter))
+  
+  # use full model to predict
+  y.prob <- predict(fit, newdata = test.tree)
+  y.hat <- predict(fit, newdata = test.tree, type = 'class')
+  y <- test.tree$VS
+  
+  y.prob.list[[iter]] <- y.prob
+  y.true.list[[iter]] <- y
+  
+  accuracy <- Accuracy(y,y.hat)
+  auc <- AUC(as.numeric(y),as.numeric(y.hat))
+  recall <- Recall(y,y.hat)
+  precision <- Precision(y,y.hat)
+  f1 <- F1(y,y.hat)
+  youden <- Youden(y,y.hat)
+  
+  col_names <- c('Accuracy','AUC','Recall','Precision','F1 Score','Youden Index')
+  res.matrix <- matrix(c(accuracy,auc,recall,precision,f1,youden), nrow = 1)
+  colnames(res.matrix) <- col_names
+  
+  res.matrix.list[[iter]] <- res.matrix
+}
+```
+
+```{r}
+save(res.matrix.list, d_te.list, Tree.best.list, y.prob.list, y.true.list,
+     file = 'Tree_30_Lag5.rda')
+```
